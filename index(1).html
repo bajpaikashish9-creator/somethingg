@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>I love you, in 20 languages</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #09050d; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="A heart made of the words I love you in twenty languages"></canvas>
+
+<script>
+/* ============================ EDIT HERE ============================ */
+const CONFIG = {
+  seed: null,                       // a number for a fixed layout, or null for a new one each load
+  fontStack: 'Georgia, "Noto Serif", "Times New Roman", serif',
+  background: '#09050d',
+  buildSeconds: 10,                 // how long the heart takes to build itself
+  heartFill: 0.80,                  // how much of the screen the heart covers (0 to 1)
+  languages: [                      // [language, text]
+    ["English", "I love you"],        ["Spanish", "Te quiero"],
+    ["French", "Je t'aime"],          ["German", "Ich liebe dich"],
+    ["Italian", "Ti amo"],            ["Portuguese", "Eu te amo"],
+    ["Dutch", "Ik hou van jou"],      ["Swedish", "Jag älskar dig"],
+    ["Polish", "Kocham cię"],         ["Turkish", "Seni seviyorum"],
+    ["Swahili", "Nakupenda"],         ["Russian", "Я тебя люблю"],
+    ["Greek", "Σ' αγαπώ"],            ["Japanese", "愛してる"],
+    ["Chinese", "我爱你"],             ["Korean", "사랑해"],
+    ["Hindi", "मैं तुमसे प्यार करता हूँ"], ["Arabic", "أحبك"],
+    ["Hebrew", "אני אוהב אותך"],       ["Thai", "ฉันรักเธอ"]
+  ]
+};
+/* =================================================================== */
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MOTION = reduceMotion ? 0.25 : 1;
+
+let seed = CONFIG.seed ?? Math.floor(Math.random() * 1e6);
+let W = 0, H = 0, DPR = 1;
+let particles = [], bgCanvas = null, glowCanvas = null;
+let buildStart = 0;
+const FADE = 1.2;                  // seconds each word takes to appear
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function makePalette(n, rng) {
+  const cols = [];
+  for (let i = 0; i < n; i++) {
+    const f = i / (n - 1);
+    const hue = f < 0.85 ? (340 + 47 * f) % 360 : 285 + 20 * (f - 0.85) / 0.15;
+    cols.push({ h: hue, s: 55 + rng() * 35, l: 68 + rng() * 14 });
+  }
+  for (let i = n - 1; i > 0; i--) {            // shuffle
+    const j = Math.floor(rng() * (i + 1));
+    [cols[i], cols[j]] = [cols[j], cols[i]];
+  }
+  return cols;
+}
+
+function heartPath(g, W, H, fill) {
+  const pts = [];
+  for (let i = 0; i < 500; i++) {
+    const t = Math.PI * 2 * i / 500;
+    pts.push([
+      16 * Math.sin(t) ** 3,
+      -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t))
+    ]);
+  }
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const s = Math.min(W * fill / (maxX - minX), H * fill / (maxY - minY));
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const poly = pts.map(([x, y]) => [(x - cx) * s + W / 2, (y - cy) * s + H / 2]);
+  g.beginPath();
+  poly.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+  g.closePath();
+  return poly;
+}
+
+function build() {
+  const rng = mulberry32(seed);
+  const langs = CONFIG.languages;
+  const palette = makePalette(langs.length, rng);
+
+  // Heart mask
+  const m = document.createElement('canvas');
+  m.width = W; m.height = H;
+  const mc = m.getContext('2d');
+  const poly = heartPath(mc, W, H, CONFIG.heartFill);
+  mc.fillStyle = '#fff'; mc.fill();
+  const data = mc.getImageData(0, 0, W, H).data;
+  const inside = (x, y) => x >= 0 && y >= 0 && x < W && y < H && data[((y | 0) * W + (x | 0)) * 4 + 3] > 128;
+  const minX = Math.min(...poly.map(p => p[0])), maxX = Math.max(...poly.map(p => p[0]));
+  const minY = Math.min(...poly.map(p => p[1])), maxY = Math.max(...poly.map(p => p[1]));
+
+  // Backdrop: soft vignette + heart-shaped glow
+  bgCanvas = document.createElement('canvas');
+  bgCanvas.width = W * DPR; bgCanvas.height = H * DPR;
+  const bg = bgCanvas.getContext('2d');
+  bg.scale(DPR, DPR);
+  bg.fillStyle = CONFIG.background; bg.fillRect(0, 0, W, H);
+  const rg = bg.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.65);
+  rg.addColorStop(0, 'rgba(60,18,45,0.55)'); rg.addColorStop(1, 'rgba(9,5,13,0)');
+  bg.fillStyle = rg; bg.fillRect(0, 0, W, H);
+
+  glowCanvas = document.createElement('canvas');
+  glowCanvas.width = W * DPR; glowCanvas.height = H * DPR;
+  const gl = glowCanvas.getContext('2d');
+  gl.scale(DPR, DPR);
+  gl.shadowColor = 'rgba(255,60,120,0.9)';
+  gl.shadowBlur = Math.min(W, H) * 0.09 * DPR;
+  gl.shadowOffsetX = W * DPR + 50;              // draw off-screen, keep only the shadow
+  gl.translate(-W - 50 / DPR, 0);
+  heartPath(gl, W, H, CONFIG.heartFill * 0.96);
+  gl.fillStyle = '#000'; gl.fill();
+
+  // Pack words, largest first
+  const scale = Math.min(W, H) / 900;
+  const sizes = [38, 30, 25, 21, 18, 15, 13, 11, 10].map(s => Math.max(7, Math.round(s * scale)));
+  const tries = [40, 120, 300, 700, 1400, 2400, 3600, 5000, 6000];
+  const used = new Array(langs.length).fill(0);
+  const rects = [];
+  particles = [];
+
+  const measure = document.createElement('canvas').getContext('2d');
+  const TAU = Math.PI * 2;
+  const angles = [-14, -9, -5, -2, 0, 0, 0, 2, 5, 9, 14];
+
+  sizes.forEach((size, si) => {
+    measure.font = null;
+    for (let n = 0; n < tries[si]; n++) {
+      let li = Math.floor(rng() * langs.length);        // least-used of 3 picks
+      for (let k = 0; k < 2; k++) {
+        const c = Math.floor(rng() * langs.length);
+        if (used[c] < used[li]) li = c;
+      }
+      const text = langs[li][1];
+      measure.font = `${size}px ${CONFIG.fontStack}`;
+      const w = measure.measureText(text).width, h = size * 1.2;
+      const ang = (angles[Math.floor(rng() * angles.length)] + (rng() - 0.5) * 4) * Math.PI / 180;
+      const bw = Math.abs(w * Math.cos(ang)) + Math.abs(h * Math.sin(ang));
+      const bh = Math.abs(w * Math.sin(ang)) + Math.abs(h * Math.cos(ang));
+      const x = minX + rng() * (maxX - minX), y = minY + rng() * (maxY - minY);
+      const cw = bw * 0.92, ch = bh * 0.78;
+      const l = x - cw / 2, r = x + cw / 2, t = y - ch / 2, b = y + ch / 2;
+
+      if (!(inside(l, t) && inside(r, t) && inside(l, b) && inside(r, b) &&
+            inside(x, t) && inside(x, b) && inside(l, y) && inside(r, y))) continue;
+      let hit = false;
+      for (let i = 0; i < rects.length; i++) {
+        const q = rects[i];
+        if (l - 3 < q[2] && r + 3 > q[0] && t - 1 < q[3] && b + 1 > q[1]) { hit = true; break; }
+      }
+      if (hit) continue;
+
+      rects.push([l, t, r, b]);
+      used[li]++;
+
+      // Pre-render this word as a sprite (with a faint bloom)
+      const pad = size * 0.7;
+      const sw = Math.ceil(bw + pad * 2), sh = Math.ceil(bh + pad * 2);
+      const sprite = document.createElement('canvas');
+      sprite.width = sw * DPR; sprite.height = sh * DPR;
+      const sg = sprite.getContext('2d');
+      sg.scale(DPR, DPR);
+      const p = palette[li], mix = rng() * 0.25;
+      const color = `hsl(${p.h},${p.s * (1 - mix * 0.6)}%,${p.l + (100 - p.l) * mix}%)`;
+      sg.translate(sw / 2, sh / 2); sg.rotate(ang);
+      sg.font = `${size}px ${CONFIG.fontStack}`;
+      sg.textAlign = 'center'; sg.textBaseline = 'middle';
+      sg.shadowColor = `hsla(${p.h},90%,65%,0.7)`; sg.shadowBlur = size * 0.35;
+      sg.fillStyle = color; sg.fillText(text, 0, 0);
+
+      const amp = 1.5 + 5 * Math.pow(1 - size / sizes[0], 0.7);
+      particles.push({
+        sprite, sw, sh, bx: x - W / 2, by: y - H / 2,
+        ax: amp * (0.5 + rng() * 0.7), ay: amp * (0.5 + rng() * 0.7),
+        fx: 0.25 + rng() * 0.45, fy: 0.25 + rng() * 0.45,
+        px: rng() * TAU, py: rng() * TAU,
+        tw: 0.8 + rng() * 1.4, tp: rng() * TAU
+      });
+    }
+  });
+
+  // Build order: the heart rises from its bottom tip, big words leading
+  particles.forEach(p => {
+    const u = (maxY - (p.by + H / 2)) / (maxY - minY);          // 0 at the tip, 1 at the top
+    p.rt = CONFIG.buildSeconds * 0.88 * Math.min(1, Math.max(0, 0.8 * u + 0.2 * rng()));
+  });
+  buildStart = performance.now() / 1000;
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(320, window.innerWidth); H = Math.max(320, window.innerHeight);
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  build();
+}
+
+function frame(ms) {
+  const t = ms / 1000;
+  const phase = (t % 1.6) / 1.6;                           // lub-dub heartbeat
+  const beat = Math.exp(-(((phase - 0.08) / 0.05) ** 2)) + 0.6 * Math.exp(-(((phase - 0.26) / 0.06) ** 2));
+  const el = t - buildStart;
+  const prog = Math.min(1, Math.max(0, el / (CONFIG.buildSeconds + FADE)));
+  const pulse = 1 + 0.022 * beat * MOTION * prog * prog;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(bgCanvas, 0, 0);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = (0.22 + 0.28 * beat * MOTION) * prog;
+  ctx.drawImage(glowCanvas, 0, 0);
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const cx = W / 2, cy = H / 2;
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    const a = Math.min(1, (el - p.rt) / FADE);
+    if (a <= 0) continue;                                   // not built yet
+    const e = 1 - Math.pow(1 - a, 3);                      // ease-out
+    const grow = 0.55 + 0.45 * e;
+    const x = cx + p.bx * pulse + p.ax * MOTION * Math.sin(t * p.fx + p.px);
+    const y = cy + p.by * pulse + p.ay * MOTION * Math.cos(t * p.fy + p.py) + (1 - e) * 18;
+    let wave = 0.5 + 0.5 * Math.sin(x * 0.010 + y * 0.007 - t * 1.25);   // diagonal shimmer
+    wave = wave * wave * wave;
+    const twinkle = 0.5 + 0.5 * Math.sin(t * p.tw + p.tp);
+    ctx.globalAlpha = Math.min(1, (135 + 47 * twinkle + 70 * wave + 25 * beat + 90 * Math.sin(a * Math.PI)) / 255) * e;
+    ctx.drawImage(p.sprite, x - p.sw * grow / 2, y - p.sh * grow / 2, p.sw * grow, p.sh * grow);
+  }
+  requestAnimationFrame(frame);
+}
+
+let resizeTimer;
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 150); });
+canvas.addEventListener('click', () => { seed = Math.floor(Math.random() * 1e6); build(); });  // tap to remix
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
